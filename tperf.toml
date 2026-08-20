@@ -1,0 +1,8 @@
+client_addr = "0.0.0.0:7777"
+test_addr = "srv1:9100"
+network = "tcp"
+payload_size = "64KiB"
+workers = 2
+type = "mesh"
+hostlist = ["srv{1..4}"]
+tag = "live"
