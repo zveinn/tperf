@@ -1,18 +1,29 @@
-# Copy to tperf.toml. The file is the source of truth (no option flags).
+# Example tperf config. Copy to tperf.toml (or pass the path as the
+# positional argument). The file is the source of truth — there are no
+# option flags for test settings.
 #
 #   tperf server tperf.toml
 #   tperf client tperf.toml
-#
-# client_addr: servers bind this control socket; the client dials hostlist:port.
+#   tperf analyze --db ./run1.db
+
+# Control plane. Servers bind this address; the client dials each
+# hostlist entry on the same port.
 client_addr = "0.0.0.0:7777"
-#
-# test_addr: required. Host/IP must not be 0.0.0.0 or ::.
-# The port is used on every server. If the host is an IP, it selects IPv4 vs IPv6;
+
+# Data plane. Required. Host/IP must not be 0.0.0.0 or ::.
+# The port is used on every server. An IP here selects IPv4 vs IPv6;
 # each server binds its own resolved address on that port.
 test_addr = "srv1:9100"
+
 network = "tcp"          # tcp | udp
-payload_size = "100MiB"  # bytes per write; also 64KiB, 1e6, ...
+payload_size = "100MiB"  # bytes per write: 64KiB, 1MiB, 1000000, …
 workers = 10             # concurrent writers per destination
 type = "pairs"           # pairs | mesh
-hostlist = ["srv{1..4}"] # ellipsis may appear anywhere: rack-{1..3}.lab
-tag = "run1"             # one sqlite file per run: ./run1.db (replaced if it exists)
+
+# Hosts, one by one or with an ellipsis anywhere in the name:
+#   ["n1", "n2"]  or  ["srv{1..10}.lab"]  or  "rack-{01..04}"
+hostlist = ["srv{1..4}"]
+
+# Test id. Creates ./<tag>.db in the client's working directory
+# (replaced if it already exists).
+tag = "run1"
