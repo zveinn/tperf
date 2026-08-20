@@ -14,6 +14,10 @@ cargo build --release
 
 The binary is `target/release/tperf`.
 
+Tagged releases (`v*`) build Linux **amd64** and **arm64** binaries and attach
+them to a GitHub release. Download from
+[Releases](https://github.com/zveinn/tperf/releases).
+
 ## Commands
 
 ```text
