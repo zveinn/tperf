@@ -18,7 +18,7 @@ test_addr = "srv1:9100"
 network = "tcp"          # tcp | udp
 payload_size = "100MiB"  # bytes per write: 64KiB, 1MiB, 1000000, …
 workers = 10             # concurrent writers per destination
-type = "pairs"           # pairs | mesh
+type = "pairs"           # pairs (round-robin, every host vs every other) | mesh
 
 # Hosts, one by one or with an ellipsis anywhere in the name:
 #   ["n1", "n2"]  or  ["srv{1..10}.lab"]  or  "rack-{01..04}"

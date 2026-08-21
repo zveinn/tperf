@@ -65,14 +65,21 @@ See [`tperf.toml.example`](tperf.toml.example). Fields:
 ### Test types
 
 - **mesh** — every node sends to every other node at the same time.
-- **pairs** — the client pairs hosts with no overlap (`(0,1), (2,3), …`) and each
-  pair sends both ways. An odd leftover host is idle.
+- **pairs** — round-robin of disjoint pairs so every host is tested against every
+  other. Multiple pairs run at once; a host is in only one pair per round. For
+  4 servers that is 3 rounds (`1-2 & 3-4`, then `1-3 & 2-4`, then `1-4 & 2-3`).
+  Each round lasts 1 second; the schedule repeats until you stop the client.
+  An odd leftover host sits out that round.
 
 ## Metrics
 
 Each server measures send/receive throughput, dropped packets (UDP sequence
-gaps / failed writes), process CPU %, and RSS. Windows are ~1 second, with the
-duration taken from `CLOCK_MONOTONIC` in nanoseconds.
+gaps / failed writes), process CPU %, and RSS. Metric windows are aligned to a
+1-second `CLOCK_MONOTONIC` grid: the server waits until the 1s mark (sleep, then
+a short spin) and only then snapshots. A stop or pairs round-switch **before**
+that mark discards the partial interval — you should not see `window=0.66s`
+lines. Throughput is still `bytes × 8 / measured_ns` (typically `1.0000s` after
+truncating to 4 decimals; a few hundred nanoseconds of overshoot is normal).
 
 The client prints one line per window per server, and appends the same data
 (including per-peer breakdown) to SQLite.

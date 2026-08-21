@@ -6,6 +6,10 @@ use std::path::{Path, PathBuf};
 use crate::metrics::{bps, fmt_bps};
 use crate::proto::PeerMetrics;
 
+/// Stop/flush slices are much shorter than the 1s metric window and
+/// often have send=0 with leftover recv. They are not real samples.
+const MIN_WINDOW_NS: u64 = 50_000_000;
+
 #[derive(Debug, Clone)]
 pub struct RateStats {
     pub min_bps: f64,
@@ -157,8 +161,15 @@ fn load(db_path: &Path) -> Result<Report> {
         let row = row.context("read metrics row")?;
         let peers: Vec<PeerMetrics> = serde_json::from_str(&row.peers_json)
             .with_context(|| format!("peers_json for {}", row.server))?;
+        // Directed send A→B is bytes_sent on A. Recv-only rows mean B sent
+        // to A while A's outbound write never landed (round switch, connect
+        // still retrying). Counting those as 0 bps poisons min/avg.
+        // Sub-50ms windows are stop/flush slices, not real 1s samples.
         for p in peers {
             if p.peer == row.server {
+                continue;
+            }
+            if p.bytes_sent == 0 || row.duration_ns < MIN_WINDOW_NS {
                 continue;
             }
             pair_samples
@@ -166,9 +177,11 @@ fn load(db_path: &Path) -> Result<Report> {
                 .or_default()
                 .push((p.bytes_sent, row.duration_ns));
         }
-        let bucket = row.wall_start_ns / 1_000_000_000;
-        *bucket_bps.entry(bucket).or_insert(0.0) += row.send_bps;
-        total_samples.push((row.bytes_sent, row.duration_ns));
+        if row.duration_ns >= MIN_WINDOW_NS && row.bytes_sent > 0 {
+            let bucket = row.wall_start_ns / 1_000_000_000;
+            *bucket_bps.entry(bucket).or_insert(0.0) += row.send_bps;
+            total_samples.push((row.bytes_sent, row.duration_ns));
+        }
     }
 
     let pairs: Vec<PairStats> = pair_samples
@@ -214,12 +227,14 @@ struct RawRow {
 }
 
 fn print_report(r: &Report) {
+    let n = r.hosts.len();
+    let expected = n.saturating_mul(n.saturating_sub(1));
+    let observed = r.pairs.len();
     println!(
         "tperf analyze  db={}  tag={}  hosts={}",
-        r.db_path,
-        r.tag,
-        r.hosts.len()
+        r.db_path, r.tag, n
     );
+    println!("directed pairs: {observed}/{expected}  (every host → every other)");
     println!();
 
     println!("pairs (all time)");
@@ -319,6 +334,16 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("not found"), "{err}");
+    }
+
+    #[test]
+    fn zero_send_samples_are_not_a_zero_rate() {
+        // A 1s send of 1.25e9 bytes is 10 Gbps. A 0-byte sibling must not
+        // pull min to 0 if the caller filters it out (load() does).
+        let ten = 1_250_000_000u64;
+        let s = RateStats::from_samples(&[(ten, 1_000_000_000)]).unwrap();
+        assert!((s.min_bps - 10e9).abs() < 1.0);
+        assert!(RateStats::from_samples(&[]).is_none());
     }
 
     #[test]

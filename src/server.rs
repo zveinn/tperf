@@ -16,6 +16,8 @@ use crate::netutil::{parse_host_port, tcp_listen};
 use crate::proto::{read_frame, write_frame_locked, Assignment, MetricWindow, Msg};
 
 const WINDOW_NS: u64 = 1_000_000_000;
+/// Sleep until this close to the deadline, then spin on CLOCK_MONOTONIC.
+const WINDOW_SPIN_NS: u64 = 200_000;
 
 pub async fn run(client_addr: &str) -> Result<()> {
     let (host, port) = parse_host_port(client_addr)?;
@@ -172,31 +174,19 @@ async fn metrics_loop(
     let mut prev_peers: Vec<Snap>;
     (prev_total, prev_peers) = counters.snapshot_all();
     let mut prev_proc = sample_proc().ok();
-    let mut mono_start = monotonic_ns();
+    let origin = monotonic_ns();
+    let mut mono_start = origin;
     let mut wall_start = realtime_ns();
+    let mut window_i: u64 = 1;
 
     loop {
-        let now = monotonic_ns();
-        let sleep_ns = WINDOW_NS
-            .saturating_sub(now.saturating_sub(mono_start))
-            .max(1);
-        tokio::select! {
-            _ = cancel.cancelled() => {
-                emit_window(
-                    &server,
-                    &counters,
-                    &wr,
-                    &mut prev_total,
-                    &mut prev_peers,
-                    &mut prev_proc,
-                    &mut mono_start,
-                    &mut wall_start,
-                )
-                .await;
-                let _ = done.send(());
-                return;
-            }
-            _ = tokio::time::sleep(Duration::from_nanos(sleep_ns)) => {}
+        let deadline = origin.saturating_add(window_i.saturating_mul(WINDOW_NS));
+        // Only emit a window that ran to the 1s grid mark. A stop/round-switch
+        // before the deadline drops the partial interval instead of reporting
+        // a 0.66s (or 20ms) slice.
+        if !wait_until_mono(deadline, &cancel).await {
+            let _ = done.send(());
+            return;
         }
         emit_window(
             &server,
@@ -209,9 +199,39 @@ async fn metrics_loop(
             &mut wall_start,
         )
         .await;
+        window_i = window_i.saturating_add(1);
         if cancel.is_cancelled() {
             let _ = done.send(());
             return;
+        }
+    }
+}
+
+/// Wait until CLOCK_MONOTONIC reaches `deadline_ns`. Returns false if cancelled
+/// first. Coarse-sleeps, then spins the last ~200µs so the mark is tight.
+async fn wait_until_mono(deadline_ns: u64, cancel: &CancellationToken) -> bool {
+    loop {
+        let now = monotonic_ns();
+        if now >= deadline_ns {
+            return true;
+        }
+        if cancel.is_cancelled() {
+            return false;
+        }
+        let remain = deadline_ns - now;
+        if remain > WINDOW_SPIN_NS {
+            tokio::select! {
+                _ = cancel.cancelled() => return false,
+                _ = tokio::time::sleep(Duration::from_nanos(remain - WINDOW_SPIN_NS)) => {}
+            }
+        } else {
+            while monotonic_ns() < deadline_ns {
+                if cancel.is_cancelled() {
+                    return false;
+                }
+                std::hint::spin_loop();
+            }
+            return true;
         }
     }
 }
